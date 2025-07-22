@@ -1,3 +1,7 @@
+'''
+配置参数
+'''
+
 import argparse
 import os
 import sys
@@ -10,6 +14,14 @@ class opts():
         # basic 基本参数
         self.parser.add_argument('--down_ratio', type=int, default=1,
                                  help='output stride. Currently only supports for 1.')
+
+        # system 系统参数
+        self.parser.add_argument('--gpus', default='0, 1',
+                                 help='-1 for CPU, use comma for multiple gpus')
+        self.parser.add_argument('--num_workers', type=int, default=4,
+                                 help='dataloader threads. 0 for single-thread.')
+        self.parser.add_argument('--seed', type=int, default=666,
+                                 help='random seed')
 
         # train 训练参数
         self.parser.add_argument('--lr', type=float, default=1.25e-4,
@@ -42,7 +54,7 @@ class opts():
         opt = self.parser.parse_args()
 
 
-        print('\n====print opt====\n')
+        print_banner('print opt')
         print(opt)
         return opt
     

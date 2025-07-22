@@ -1,9 +1,14 @@
+'''
+数据集类
+'''
+
 import os
 import torch
 import numpy as np
 import cv2
 from torch.utils.data import Dataset, DataLoader
 from src.utils.opts import opts
+from src.utils.tools import print_banner
 
 class MPDataset(Dataset):
     def __init__(self, opts, type='train'):
@@ -11,7 +16,7 @@ class MPDataset(Dataset):
         self.opt = opts.parse() # 获取配置文件
         self.type = type        # 获取数据集类型
 
-        print('\n==Initializing {} Dataset==\n'.format(self.type))
+        print_banner(f'Initializing {self.type} Dataset')
 
         self.root_dir = self.opt.dataroot
         self.image_dir = os.path.join(self.root_dir, self.type, 'images') # 获取数据集路径
@@ -46,7 +51,7 @@ class MPDataset(Dataset):
 
 
 
-        print('\n==Loaded {} {} images==\n'.format(self.num_samples, self.type))
+        print_banner(f'Loaded {self.num_samples} {self.type} images')
 
     def _read_label(self, label_path):
         """
