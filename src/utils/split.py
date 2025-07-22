@@ -1,3 +1,6 @@
+'''
+将训练集按照8:2的比例划分为训练集和验证集
+'''
 import os
 import shutil
 import random
