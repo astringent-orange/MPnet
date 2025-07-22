@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from lib.models.DCNv2.dcn_v2 import DCN
+from mmcv.ops import ModulatedDeformConv2d as DCN
 
 class DeConvGRUCell(nn.Module):
     def __init__(self, input_dim, hidden_dim, kernel_size, bias=True, activation=F.tanh):

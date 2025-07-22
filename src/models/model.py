@@ -12,7 +12,7 @@ from torch import nn
 import torch.nn.functional as F
 import torch.utils.model_zoo as model_zoo
 
-from lib.models.DCNv2.dcn_v2 import DCN
+from mmcv.ops import ModulatedDeformConv2d
 from .conv_gru import ConvGRU
 from .deconv_gru import DeConvGRU
 
@@ -252,7 +252,9 @@ class DeformConv(nn.Module):
             nn.BatchNorm2d(cho, momentum=BN_MOMENTUM),
             nn.ReLU(inplace=True)
         )
-        self.conv = DCN(chi, cho, kernel_size=(3,3), stride=1, padding=1, dilation=1, deformable_groups=1)
+        self.conv = ModulatedDeformConv2d(
+            chi, cho, kernel_size=3, stride=1, padding=1, dilation=1, deform_groups=1
+        )
 
     def forward(self, x):
         x = self.conv(x)
@@ -549,21 +551,26 @@ class DLASeg(nn.Module):
         self.mask_layer.bias.data.fill_(-4.6)
         # ---------up---------
 
-        self.heads = heads
+        # 初始化多任务输出头
+        self.heads = heads  # heads为字典，key为任务名，value为输出通道数
         for head in self.heads:
-            classes = self.heads[head]
+            classes = self.heads[head]  # 当前任务的输出通道数
             if head_conv > 0:
+                # 构建输出头：Conv2d -> ReLU -> Conv2d
                 fc = nn.Sequential(
                     nn.Conv2d(channels[self.first_level], head_conv,
-                              kernel_size=3, padding=1, bias=True),
-                    nn.ReLU(inplace=True),
+                              kernel_size=3, padding=1, bias=True),  # 卷积层，通道数为head_conv
+                    nn.ReLU(inplace=True),  # 激活函数
                     nn.Conv2d(head_conv, classes,
                               kernel_size=final_kernel, stride=1,
-                              padding=final_kernel // 2, bias=True))
+                              padding=final_kernel // 2, bias=True))  # 输出层，通道数为classes
                 if 'hm' in head:
+                    # 热力图头(hm)的最后一层偏置初始化为-4.6
                     fc[-1].bias.data.fill_(-4.6)
                 else:
+                    # 其他任务头使用fill_fc_weights初始化
                     fill_fc_weights(fc)
+            # 将输出头注册为模块属性，名称为head
             self.__setattr__(head, fc)
 
 
@@ -657,11 +664,38 @@ class DLASeg(nn.Module):
         4. mask_layer生成掩码，堆叠p0形成时序特征序列
         5. 时序上采样(DeConvGRUNet)：p0_seq -> final_seq, final_hm
         6. 各输出头处理final_seq或final_hm，输出到ret
-        输入: img_input (B, N, 3, H, W)
-        输出: [temp_feat, ret]，ret为各任务输出
+
+        输入:
+            img_input: torch.Tensor, shape (B, N, 3, H, W)
+                - B: batch size
+                - N: 时序帧数
+                - 3: 通道数 (RGB)
+                - H, W: 图像高宽
+            training: bool, 是否为训练模式
+            vid: 可选，视频ID
+
+        输出:
+            [temp_feat, ret]
+            其中：
+            - temp_feat: list，长度为N，每个元素为[p0, p1, p2, p3]，分别为每帧的多尺度特征张量
+                - p0: torch.Tensor, shape (B, 32, H, W)
+                - p1: torch.Tensor, shape (B, 32, H//2, W//2)
+                - p2: torch.Tensor, shape (B, 64, H//4, W//4)
+                - p3: torch.Tensor, shape (B, 128, H//8, W//8)
+            - ret: dict，格式如下：
+                {
+                    1: {
+                        'hm_seq': torch.Tensor, shape (B, N, 1, H, W)
+                            # 时序掩码热力图序列
+                        <head1>: torch.Tensor, ... # 任务输出，key为head名
+                        <head2>: torch.Tensor, ...
+                        ...
+                    }
+                }
+                其中各head输出格式为：
+                    - 若head名包含'dis'，则输出shape为 (B, N-1, head_dim, H, W)
+                    - 其他head，输出shape为 (B, head_dim, H, W)
         """
-        # x : B, N, C, H, W
-        # ..., -3, -2, -1, 0
         B, N, _, H, W = img_input.shape
         mask = None
         p1_pre = None
@@ -690,25 +724,25 @@ class DLASeg(nn.Module):
 
             # mask prop
             if i == 0:
-                mask_out = self.mask_layer(p0).unsqueeze(1)                                 # B, N, 1, 512, 512
+                mask_out = self.mask_layer(p0).unsqueeze(1)  # (B, 1, 1, H, W)
             else:
-                mask_out = torch.cat((mask_out, self.mask_layer(p0).unsqueeze(1)), dim=1)
+                mask_out = torch.cat((mask_out, self.mask_layer(p0).unsqueeze(1)), dim=1)  # (B, i+1, 1, H, W)
 
             mask = F.sigmoid(mask_out[:, i])
 
             # construct sequence
             if i == 0:
-                p0_seq = p0.unsqueeze(1)
+                p0_seq = p0.unsqueeze(1)  # (B, 1, 32, H, W)
             else:
-                p0_seq = torch.cat((p0_seq, p0.unsqueeze(1)), dim=1)    # B, N, 32, 512, 512
+                p0_seq = torch.cat((p0_seq, p0.unsqueeze(1)), dim=1)  # (B, i+1, 32, H, W)
         # ------------------down end------------------
 
         # ------------------up begin------------------
         # sequence up
-        final_seq, final_hm = self.deconv_gru(p0_seq)       # B, N - 1, 32, 512, 512
+        final_seq, final_hm = self.deconv_gru(p0_seq)       # (B, N-1, 32, H, W), (B, 32, H, W)
         # ------------------up end------------------
 
-        ret_temp['hm_seq'] = mask_out       # B, N, 1, 512, 512s
+        ret_temp['hm_seq'] = mask_out       # (B, N, 1, H, W)
 
         # only for track
         if not training:
@@ -718,18 +752,25 @@ class DLASeg(nn.Module):
         ret = {}
         for head in self.heads:
             if 'dis' in head:
+                # 输出 shape: (B, N-1, head_dim, H, W)
                 trk_out = self.__getattr__(head)(final_seq[:, 0]).unsqueeze(1)
                 for i in range(1, N - 1):
                     x = self.__getattr__(head)(final_seq[:, i]).unsqueeze(1)
                     trk_out = torch.cat((trk_out, x), dim=1)
                 ret_temp[head] = trk_out
             else:
+                # 输出 shape: (B, head_dim, H, W)
                 ret_temp[head] = self.__getattr__(head)(final_hm)
         ret[1] = ret_temp
+
+        # 输出内容与格式说明：
+        #   temp_feat: list, 长度N, 每个元素为[p0, p1, p2, p3]，分别为每帧的多尺度特征张量
+        #   ret: dict, 结构为{1: {...}}，其中'...'为各任务head的输出，具体格式见上文
         return [temp_feat, ret]
 
 
-def Model(heads, head_conv=128):
-    model = DLASeg(heads,final_kernel=1,
-                 head_conv=head_conv)
+def Model(opt):
+    head = {'hm': opt.num_classes, 'wh': 2, 'reg': 2, 'dis': 2}
+    model = DLASeg(head,final_kernel=1,
+                 head_conv=128)
     return model

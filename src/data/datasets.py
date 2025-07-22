@@ -11,9 +11,9 @@ from src.utils.opts import opts
 from src.utils.tools import print_banner
 
 class MPDataset(Dataset):
-    def __init__(self, opts, type='train'):
+    def __init__(self, opt, type='train'):
         super(MPDataset, self).__init__()
-        self.opt = opts.parse() # 获取配置文件
+        self.opt = opt          # 获取配置文件
         self.type = type        # 获取数据集类型
 
         print_banner(f'Initializing {self.type} Dataset')
@@ -51,7 +51,7 @@ class MPDataset(Dataset):
 
 
 
-        print_banner(f'Loaded {self.num_samples} {self.type} images')
+        print(f'Loaded {self.num_samples} {self.type} images')
 
     def _read_label(self, label_path):
         """

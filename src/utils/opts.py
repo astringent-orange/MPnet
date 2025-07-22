@@ -6,6 +6,7 @@ import argparse
 import os
 import sys
 from datetime import datetime
+from src.utils.tools import print_banner
 
 class opts():
     def __init__(self):
@@ -24,6 +25,8 @@ class opts():
                                  help='random seed')
 
         # train 训练参数
+        self.parser.add_argument('--num_classes', type=int, default=1,
+                                 help='number of classes')
         self.parser.add_argument('--lr', type=float, default=1.25e-4,
                                  help='learning rate for batch size 4.')
         self.parser.add_argument('--lr_step', type=str, default='14',
@@ -48,11 +51,18 @@ class opts():
                                 help='path to dataset')
 
         # save 保存参数
+        self.parser.add_argument('--save_dir', type=str, default='./experiments',
+                                 help='path to save outputs')
 
     
     def parse(self):
         opt = self.parser.parse_args()
 
+        opt.gpus = [int(gpu) for gpu in opt.gpus.split(',')]
+
+        # 输出目录
+        now = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+        opt.save_dir = os.path.join(opt.save_dir, now)
 
         print_banner('print opt')
         print(opt)
