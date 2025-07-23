@@ -207,15 +207,18 @@ marimo/_lsp/
 __marimo__/
 
 # Dataset
-*.jpg
-*.txt
-*.avi
-*.mp4
-*.mov
-*.flv
-*.wmv
-*.mkv
-*.webm
-*.gif
-*.png
-*.jpeg
+data/*
+!data/.gitkeep
+
+experiments/*
+!experiments/.gitkeep
+
+config/*
+!config/.gitkeep
+
+
+
+
+
+
+
