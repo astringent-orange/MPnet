@@ -248,6 +248,8 @@ def fill_up_weights(up):
 class DeformConv(nn.Module):
     def __init__(self, chi, cho):
         super(DeformConv, self).__init__()
+        self.offset = nn.Conv2d(chi, 18, kernel_size=3, stride=1, padding=1)
+        self.mask = nn.Conv2d(chi, 9, kernel_size=3, stride=1, padding=1)
         self.actf = nn.Sequential(
             nn.BatchNorm2d(cho, momentum=BN_MOMENTUM),
             nn.ReLU(inplace=True)
@@ -257,7 +259,9 @@ class DeformConv(nn.Module):
         )
 
     def forward(self, x):
-        x = self.conv(x)
+        offset = self.offset(x)
+        mask = torch.sigmoid(self.mask(x))
+        x = self.conv(x, offset, mask)
         x = self.actf(x)
         return x
 
@@ -421,7 +425,7 @@ class MaskProp(nn.Module):
         feat_patch_kept = feat_patch[keep_index, :]                                         # Ind, C, Ws, Ws
         mask_patch_kept = mask_patch[keep_index, :]                                         # Ind, 1, Ws, Ws
         heat_attn = self.attn_cross(feat_patch_kept, pre_patch_kept * mask_patch_kept)      # Ind, C, Ws, Ws
-        heat_compe = torch.zeros(Wn, C, self.ws, self.ws).cuda()
+        heat_compe = torch.zeros(Wn, C, self.ws, self.ws, device=feat.device, dtype=heat_attn.dtype)
         heat_compe[keep_index, :, :, :] = heat_attn
 
         # ----------- reverse -----------

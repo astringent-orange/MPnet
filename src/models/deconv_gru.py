@@ -57,6 +57,9 @@ class DeConvGRUCell(nn.Module):
         self.reset_parameters()
 
     def forward(self, input, h_prev):
+        # 保证h_prev和input在同一device
+        if h_prev.device != input.device:
+            h_prev = h_prev.to(input.device)
         _, _, H, W = input.shape
         combined = torch.cat((input, h_prev), dim=1)  # concatenate along channel axis
 
@@ -71,10 +74,10 @@ class DeConvGRUCell(nn.Module):
 
         return h_cur
 
-    def init_hidden(self, batch_size, height, width, cuda=True):
-        state = torch.zeros(batch_size, self.hidden_dim, height, width)
-        if cuda:
-            state = state.cuda()
+    def init_hidden(self, batch_size, height, width, device=None):
+        if device is None:
+            device = torch.device('cpu')
+        state = torch.zeros(batch_size, self.hidden_dim, height, width, device=device)
         return state
 
     def reset_parameters(self):
@@ -137,9 +140,9 @@ class DeConvGRU(nn.Module):
         last_state_list, layer_output
         """
         cur_layer_input = torch.unbind(input, dim=int(self.batch_first))
-
+        input_device = cur_layer_input[0].device
         if hidden_state is None:
-            hidden_state = self.get_init_states(cur_layer_input[0].size(0), cur_layer_input[0].size(2), cur_layer_input[0].size(3))
+            hidden_state = self.get_init_states(cur_layer_input[0].size(0), cur_layer_input[0].size(2), cur_layer_input[0].size(3), device=input_device)
 
         seq_len = len(cur_layer_input)
 
@@ -164,10 +167,12 @@ class DeConvGRU(nn.Module):
         for c in self.cell_list:
             c.reset_parameters()
     
-    def get_init_states(self, batch_size, height, width, cuda=True):
+    def get_init_states(self, batch_size, height, width, device=None):
+        if device is None:
+            device = torch.device('cpu')
         init_states = []
         for i in range(self.num_layers):
-            init_states.append(self.cell_list[i].init_hidden(batch_size, height, width, cuda))
+            init_states.append(self.cell_list[i].init_hidden(batch_size, height, width, device=device))
         return init_states
 
     @staticmethod

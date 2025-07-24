@@ -3,73 +3,135 @@
 '''
 
 import os
+os.environ['TORCH_HOME'] = '/data/hdd3/zhangmian/Tmp/torch/'
 from src.utils.opts import opts
 from src.utils.tools import print_banner
 
 import torch
 from torch.utils.data import DataLoader
 
-# 导入数据集
+# 导入数据集和模型
 from src.data.datasets import MPDataset
+from src.models.model import Model 
+from src.models.utils import load_model, save_model
 
-from src.models.model import Model
-from src.engine.trainer import Trainer
+from src.engine.ctdet import CtdetTrainer
+
 from src.utils.logger import Logger
+
+import time
+
 
 def train(opt):
     # ********************** 准备训练 **********************
     print_banner('Preparing training')
 
-    # 设置随机种子
+    # 设置初始化参数
     torch.manual_seed(opt.seed)
-    opt.device = torch.device('cuda' if opt.gpus[0] >= 0 else 'cpu')
+    main_gpu = opt.gpus[0]
+    opt.device = torch.device(f'cuda:{main_gpu}' if main_gpu >= 0 else 'cpu')
+    val_intervals = opt.val_intervals
     print(f'Using device: {opt.device}')
 
     # 创建数据集
-    train_dataset = MPDataset(opt, type='train')
-    val_dataset = MPDataset(opt, type='val')
+    train_dataset = MPDataset(opt, dataset_type='train')
+    val_dataset = MPDataset(opt, dataset_type='val')
 
     # 创建数据加载器
     train_loader = DataLoader(train_dataset, batch_size=opt.batch_size, shuffle=True, num_workers=opt.num_workers, pin_memory=True, drop_last=True)
     val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=opt.num_workers, pin_memory=True)
 
     # 创建模型
-    print('Create model')
     model = Model(opt)
-    print(model)
     model.to(opt.device)
+    print('Create model:', model.__class__.__name__)
 
     # 创建优化器
-    print('Create optimizer')
     optimizer = torch.optim.Adam(model.parameters(), lr=opt.lr)
-    print(optimizer)
+    print('Create optimizer:', optimizer.__class__.__name__)
 
-    # 创建损失函数
-    print('Create loss')
+    # # 创建损失函数
+    # print('Create loss')
 
     # 创建训练器
-    print('Create trainer')
-    trainer = Trainer(opt, model, optimizer)
-    trainer.set_device(opt.gpus[0], opt.device)
+    trainer = CtdetTrainer(opt, model, optimizer)
+    trainer.set_device(opt.gpus, opt.device)
+    print('Create trainer:', trainer.__class__.__name__)
 
     # 创建保存目录
     if not os.path.exists(opt.save_dir):
         os.makedirs(opt.save_dir)
 
     # 创建记录器
-    print('Create logger')
     logger = Logger(opt)
-
+    print('Create logger:', logger.__class__.__name__)
 
 
     # ********************** 开始训练 **********************
     print_banner('Start training')
     start_epoch = 0
-
+    best = -1   # 最佳验证集 ap50
+    elapsed_times = []
+    total_start_time = time.time()
     for epoch in range(start_epoch + 1, opt.num_epochs + 1):
-        pass
+        start_time = time.time()
+        # 执行一个 epoch 的训练，返回训练日志
+        log_dict_train, _ = trainer.train(epoch, train_loader)
+
+        # 记录当前 epoch
+        logger.write('epoch: {} |'.format(epoch))
+
+        # 每个 epoch 都保存最新的模型参数到 'model_last.pth'（覆盖）
+        save_model(os.path.join(opt.save_dir, 'model_last.pth'),
+                   epoch, model, optimizer)
+
+        # 打印训练日志信息
+        for k, v in log_dict_train.items():
+            logger.write('{} {:8f} | '.format(k, v))
+
+        # 判断是否需要进行验证（根据 val_intervals）
+        if val_intervals > 0 and epoch % val_intervals == 0:
+            # 在验证集上评估模型
+            with torch.no_grad():
+                log_dict_val, preds, stats = trainer.val(epoch, val_loader, val_dataset)
+            # 打印验证日志信息
+            for k, v in log_dict_val.items():
+                logger.write('{} {:8f} | '.format(k, v))
+            logger.write('eval results: ')
+            # 打印评估指标
+            for k in stats.tolist():
+                logger.write('{:8f} | '.format(k))
+            # 如果当前 ap50 超过历史最佳，则保存为最佳模型
+            if log_dict_val['ap50'] > best:
+                best = log_dict_val['ap50']
+                save_model(os.path.join(opt.save_dir, 'model_best.pth'),
+                           epoch, model)
+        logger.write('\n')
+
+        # 统计并输出本epoch耗时
+        elapsed_time = time.time() - start_time
+        elapsed_times.append(elapsed_time)
+        epoch_min = int(elapsed_time // 60)
+        epoch_sec = int(elapsed_time % 60)
+        print('Epoch {} time: {}m{}s'.format(epoch, epoch_min, epoch_sec))
+        logger.write('Epoch {} time: {}m{}s\n'.format(epoch, epoch_min, epoch_sec))
+
+        # 按照 lr_step 调整学习率
+        if epoch in opt.lr_step:
+            lr = opt.lr * (0.1 ** (opt.lr_step.index(epoch) + 1))
+            print('Drop LR to', lr)
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr
 
     # ********************** 结束训练 **********************
+    total_time = time.time() - total_start_time
+    avg_time = sum(elapsed_times) / len(elapsed_times) if elapsed_times else 0
+    total_min = int(total_time // 60)
+    total_sec = int(total_time % 60)
+    avg_min = int(avg_time // 60)
+    avg_sec = int(avg_time % 60)
+    print('Total training time: {}m{}s, Average per epoch: {}m{}s'.format(total_min, total_sec, avg_min, avg_sec))
+    logger.write('Total training time: {}m{}s, Average per epoch: {}m{}s\n'.format(total_min, total_sec, avg_min, avg_sec))
     print_banner('Training finished')
     logger.close()
 

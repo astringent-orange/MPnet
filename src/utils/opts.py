@@ -33,15 +33,15 @@ class opts():
                                  help='drop learning rate by 10.')
         self.parser.add_argument('--num_epochs', type=int, default=50,
                                  help='total training epochs.')
-        self.parser.add_argument('--batch_size', type=int, default=4,
+        self.parser.add_argument('--batch_size', type=int, default=2,
                                  help='batch size')
-        self.parser.add_argument('--val_intervals', type=int, default=10,
+        self.parser.add_argument('--val_intervals', type=int, default=5,
                                  help='number of epochs to run validation.')
         self.parser.add_argument('--seq_len', type=int, default=5,
                                  help='number of images for per sample. Currently supports 5.')
 
         # test 测试参数
-        self.parser.add_argument('--K', type=int, default=450,
+        self.parser.add_argument('--max_objs', type=int, default=350,
                                  help='max number of output objects.')
 
         # model 模型参数
@@ -59,12 +59,13 @@ class opts():
         opt = self.parser.parse_args()
 
         opt.gpus = [int(gpu) for gpu in opt.gpus.split(',')]
+        opt.lr_step = [int(step) for step in opt.lr_step.split(',')]
 
         # 输出目录
         now = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
         opt.save_dir = os.path.join(opt.save_dir, now)
 
-        print_banner('print opt')
+        print_banner('Print opt')
         print(opt)
         return opt
     
