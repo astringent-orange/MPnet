@@ -1,5 +1,5 @@
 '''
-测试数据集dataset能否正常读取
+测试数据集dataset代码能否正常读取
 '''
 
 import argparse

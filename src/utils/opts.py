@@ -19,7 +19,7 @@ class opts():
         # system 系统参数
         self.parser.add_argument('--gpus', default='0, 1',
                                  help='-1 for CPU, use comma for multiple gpus')
-        self.parser.add_argument('--num_workers', type=int, default=4,
+        self.parser.add_argument('--num_workers', type=int, default=8,
                                  help='dataloader threads. 0 for single-thread.')
         self.parser.add_argument('--seed', type=int, default=666,
                                  help='random seed')
@@ -31,11 +31,11 @@ class opts():
                                  help='learning rate for batch size 4.')
         self.parser.add_argument('--lr_step', type=str, default='14',
                                  help='drop learning rate by 10.')
-        self.parser.add_argument('--num_epochs', type=int, default=50,
+        self.parser.add_argument('--num_epochs', type=int, default=20,
                                  help='total training epochs.')
         self.parser.add_argument('--batch_size', type=int, default=2,
                                  help='batch size')
-        self.parser.add_argument('--val_intervals', type=int, default=5,
+        self.parser.add_argument('--val_intervals', type=int, default=2,
                                  help='number of epochs to run validation.')
         self.parser.add_argument('--seq_len', type=int, default=5,
                                  help='number of images for per sample. Currently supports 5.')
@@ -44,7 +44,9 @@ class opts():
         self.parser.add_argument('--max_objs', type=int, default=350,
                                  help='max number of output objects.')
 
-        # model 模型参数
+        # inference 推理参数
+        self.parser.add_argument('--model_path', type=str, default='',
+                                 help='path to model')
 
         # dataset 数据集参数
         self.parser.add_argument('--dataroot', type=str, default='./data/dataset', 

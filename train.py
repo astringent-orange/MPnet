@@ -1,5 +1,13 @@
 '''
 训练模型
+
+断点续训说明：
+- 训练前会优先检查opt.model_path（如有）是否存在。
+- 若存在，则自动加载模型和优化器参数，并从上次中断的epoch+1继续训练。
+- 若不存在，则回退到save_dir/model_last.pth。
+- 若都不存在，则从头开始训练。
+- 每个epoch后会自动保存最新断点到model_last.pth。
+- 支持意外中断后无缝恢复训练。
 '''
 
 import os
@@ -50,8 +58,29 @@ def train(opt):
     optimizer = torch.optim.Adam(model.parameters(), lr=opt.lr)
     print('Create optimizer:', optimizer.__class__.__name__)
 
-    # # 创建损失函数
-    # print('Create loss')
+    # 断点续训：优先加载opt.model_path
+    resume_path = getattr(opt, 'model_path', None)
+    if resume_path is None or not os.path.exists(resume_path):
+        resume_path = os.path.join(opt.save_dir, 'model_last.pth')
+    start_epoch = 0
+    best = -1   # 最佳验证集 ap50
+    if os.path.exists(resume_path):
+        checkpoint = torch.load(resume_path, map_location=opt.device)
+        if 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+            if 'optimizer_state_dict' in checkpoint:
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            start_epoch = checkpoint.get('epoch', 0)
+            best = checkpoint.get('best', -1)
+            print(f'Resume training from epoch {start_epoch+1} (loaded from {resume_path})')
+        else:
+            # 只保存了模型参数
+            model.load_state_dict(checkpoint)
+            print(f'Loaded model weights from {resume_path}, start training from scratch.')
+            start_epoch = 0
+            best = -1
+    else:
+        print('Start training from scratch.')
 
     # 创建训练器
     trainer = CtdetTrainer(opt, model, optimizer)
@@ -69,8 +98,6 @@ def train(opt):
 
     # ********************** 开始训练 **********************
     print_banner('Start training')
-    start_epoch = 0
-    best = -1   # 最佳验证集 ap50
     elapsed_times = []
     total_start_time = time.time()
     for epoch in range(start_epoch + 1, opt.num_epochs + 1):
@@ -81,9 +108,13 @@ def train(opt):
         # 记录当前 epoch
         logger.write('epoch: {} |'.format(epoch))
 
-        # 每个 epoch 都保存最新的模型参数到 'model_last.pth'（覆盖）
-        save_model(os.path.join(opt.save_dir, 'model_last.pth'),
-                   epoch, model, optimizer)
+        # 保存最新模型参数和断点
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'best': best
+        }, os.path.join(opt.save_dir, 'model_last.pth'))
 
         # 打印训练日志信息
         for k, v in log_dict_train.items():
@@ -99,13 +130,17 @@ def train(opt):
                 logger.write('{} {:8f} | '.format(k, v))
             logger.write('eval results: ')
             # 打印评估指标
-            for k in stats.tolist():
-                logger.write('{:8f} | '.format(k))
+            for k, v in stats.items():
+                logger.write('{}: {:8f} | '.format(k, v))
             # 如果当前 ap50 超过历史最佳，则保存为最佳模型
             if log_dict_val['ap50'] > best:
                 best = log_dict_val['ap50']
-                save_model(os.path.join(opt.save_dir, 'model_best.pth'),
-                           epoch, model)
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'best': best
+                }, os.path.join(opt.save_dir, 'model_best.pth'))
         logger.write('\n')
 
         # 统计并输出本epoch耗时
