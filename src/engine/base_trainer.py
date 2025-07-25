@@ -83,7 +83,7 @@ class BaseTrainer(object):
         self.optimizer = optimizer
         self.loss_stats, self.loss = self._get_losses(opt)
         self.model_with_loss = ModelWithLoss(model, self.loss)
-        self.scaler = torch.cuda.amp.GradScaler()  # AMP scaler
+        # self.scaler = torch.cuda.amp.GradScaler()  # AMP scaler (已注释)
 
     def set_device(self, gpus, device):
         if len(gpus) > 1:
@@ -127,13 +127,15 @@ class BaseTrainer(object):
                     for item in batch[k]:
                         batch[k][item] = batch[k][item].to(device=opt.device, non_blocking=True)
             if phase == 'train':
-                with torch.cuda.amp.autocast():
-                    output, loss, loss_stats = model_with_loss(batch)
-                    loss = loss.mean()
+                # with torch.cuda.amp.autocast():
+                output, loss, loss_stats = model_with_loss(batch)
+                loss = loss.mean()
                 self.optimizer.zero_grad()
-                self.scaler.scale(loss).backward()
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
+                loss.backward()
+                self.optimizer.step()
+                # self.scaler.scale(loss).backward()
+                # self.scaler.step(self.optimizer)
+                # self.scaler.update()
             else:
                 output, loss, loss_stats = model_with_loss(batch)
                 loss = loss.mean()
@@ -178,7 +180,7 @@ class BaseTrainer(object):
         data_time, batch_time = AverageMeter(), AverageMeter()
         avg_loss_stats = {l: AverageMeter() for l in self.loss_stats}
         num_iters = len(data_loader)
-        # num_iters = 30  # 测试时用30
+        num_iters = 30  # 测试时用30
         end = time.time()
 
         def move_to_device(x, device):
