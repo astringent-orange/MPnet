@@ -39,6 +39,8 @@ class opts():
                                  help='number of epochs to run validation.')
         self.parser.add_argument('--seq_len', type=int, default=5,
                                  help='number of images for per sample. Currently supports 5.')
+        self.parser.add_argument('--amp', action='store_true',
+                                 help='enable automatic mixed precision (AMP) training')
 
         # test 测试参数
         self.parser.add_argument('--max_objs', type=int, default=350,

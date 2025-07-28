@@ -416,6 +416,11 @@ class MaskProp(nn.Module):
         Wn, _, _, _ = mask_patch.shape
 
         # ----------- choose -----------
+        # 1. 输入：mask_patch，形状 (Wn, 1, ws, ws)
+        # 2. view(-1, 1, ws*ws)：展平成 (Wn, 1, ws*ws)
+        # 3. max(dim=-1)：输出一个元组 (values, indices)，都为 (Wn, 1)
+        # 4. [0]：取出 values，即每个patch的最大值，(Wn, 1)
+        # 5. squeeze(1)：去掉多余维度，得到 (Wn,)
         mask_max = mask_patch.view(-1, 1, self.ws * self.ws).max(dim=-1)[0].squeeze(1)  # Wn
         keep_index = torch.where(mask_max >= self.low_thr)[0].cpu().numpy().tolist()   # <=Wn, list
         if len(keep_index) == 0:

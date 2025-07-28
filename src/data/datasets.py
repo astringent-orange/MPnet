@@ -231,26 +231,26 @@ class MPDataset(Dataset):
         img_id = idx
         return img_id, ret 
         
-    # def save_results(self, results, save_dir, time_str, eval_stats=None):
-    #     """
-    #     保存检测结果和评测统计到save_dir/eval_results.txt。
-    #     results: 检测结果
-    #     eval_stats: dict, 评测统计（如mAP50、precision等），可为None
-    #     """
-    #     os.makedirs(save_dir, exist_ok=True)
-    #     txt_path = os.path.join(save_dir, 'eval_results.txt')
-    #     with open(txt_path, 'a') as f:
-    #         f.write(f'==== Eval at {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")} ({time_str}) ====' + '\n')
-    #         for img_id, dets in results.items():
-    #             f.write(f'Image {img_id}:\n')
-    #             for cls_id, boxes in dets.items():
-    #                 for box in boxes:
-    #                     f.write(f'  class={cls_id}, box={box.tolist()}\n')
-    #         if eval_stats is not None:
-    #             f.write('Eval stats:\n')
-    #             for k, v in eval_stats.items():
-    #                 f.write(f'  {k}: {v}\n')
-    #         f.write('\n')
+    def save_results(self, results, save_dir, time_str, eval_stats=None):
+        """
+        保存检测结果和评测统计到save_dir/eval_results.txt。
+        results: 检测结果
+        eval_stats: dict, 评测统计（如mAP50、precision等），可为None
+        """
+        os.makedirs(save_dir, exist_ok=True)
+        txt_path = os.path.join(save_dir, 'eval_results.txt')
+        with open(txt_path, 'a') as f:
+            f.write(f'==== Eval at {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")} ({time_str}) ====' + '\n')
+            for img_id, dets in results.items():
+                f.write(f'Image {img_id}:\n')
+                for cls_id, boxes in dets.items():
+                    for box in boxes:
+                        f.write(f'  class={cls_id}, box={box.tolist()}\n')
+            if eval_stats is not None:
+                f.write('Eval stats:\n')
+                for k, v in eval_stats.items():
+                    f.write(f'  {k}: {v}\n')
+            f.write('\n')
 
     def run_eval(self, results, save_dir, time_str):
         """

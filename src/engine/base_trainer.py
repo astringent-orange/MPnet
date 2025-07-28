@@ -10,6 +10,7 @@ from src.utils.utils import AverageMeter
 from src.utils.decode import ctdet_decode
 from src.utils.post_process import ctdet_post_process
 import numpy as np
+from torch.cuda.amp import autocast, GradScaler
 
 def post_process(output, meta, num_classes, scale=1):
     # decode
@@ -83,7 +84,8 @@ class BaseTrainer(object):
         self.optimizer = optimizer
         self.loss_stats, self.loss = self._get_losses(opt)
         self.model_with_loss = ModelWithLoss(model, self.loss)
-        # self.scaler = torch.cuda.amp.GradScaler()  # AMP scaler (已注释)
+        self.amp_enabled = getattr(opt, 'amp', False)
+        self.scaler = GradScaler() if self.amp_enabled else None
 
     def set_device(self, gpus, device):
         if len(gpus) > 1:
@@ -127,18 +129,28 @@ class BaseTrainer(object):
                     for item in batch[k]:
                         batch[k][item] = batch[k][item].to(device=opt.device, non_blocking=True)
             if phase == 'train':
-                # with torch.cuda.amp.autocast():
-                output, loss, loss_stats = model_with_loss(batch)
-                loss = loss.mean()
-                self.optimizer.zero_grad()
-                loss.backward()
-                self.optimizer.step()
-                # self.scaler.scale(loss).backward()
-                # self.scaler.step(self.optimizer)
-                # self.scaler.update()
+                if self.amp_enabled:
+                    with autocast():
+                        output, loss, loss_stats = model_with_loss(batch)
+                    loss = loss.mean()
+                    self.optimizer.zero_grad()
+                    self.scaler.scale(loss).backward()
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    output, loss, loss_stats = model_with_loss(batch)
+                    loss = loss.mean()
+                    self.optimizer.zero_grad()
+                    loss.backward()
+                    self.optimizer.step()
             else:
-                output, loss, loss_stats = model_with_loss(batch)
-                loss = loss.mean()
+                if self.amp_enabled:
+                    with autocast():
+                        output, loss, loss_stats = model_with_loss(batch)
+                    loss = loss.mean()
+                else:
+                    output, loss, loss_stats = model_with_loss(batch)
+                    loss = loss.mean()
             batch_time.update(time.time() - end)
 
             bar.loss = float(loss.mean().cpu().detach().numpy())
@@ -205,7 +217,13 @@ class BaseTrainer(object):
             for k in batch:
                 if k != 'meta' and k != 'file_name':
                     batch[k] = move_to_device(batch[k], opt.device)
-            output, loss, loss_stats = model_with_loss(batch)
+            if self.amp_enabled:
+                with autocast():
+                    output, loss, loss_stats = model_with_loss(batch)
+                loss = loss.mean()
+            else:
+                output, loss, loss_stats = model_with_loss(batch)
+                loss = loss.mean()
 
             inp_height, inp_width = batch['input'].shape[3],batch['input'].shape[4]
             c = np.array([inp_width / 2., inp_height / 2.], dtype=np.float32)
