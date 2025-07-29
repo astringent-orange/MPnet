@@ -192,7 +192,7 @@ class BaseTrainer(object):
         data_time, batch_time = AverageMeter(), AverageMeter()
         avg_loss_stats = {l: AverageMeter() for l in self.loss_stats}
         num_iters = len(data_loader)
-        num_iters = 30  # 测试时用30
+        # num_iters = 30
         end = time.time()
 
         def move_to_device(x, device):
@@ -296,11 +296,13 @@ class BaseTrainer(object):
             ret['ap50'] = stats1['ap50']
         elif isinstance(stats1, (list, tuple)) and len(stats1) > 1:
             ret['ap50'] = stats1[1]
+        elif isinstance(stats1, dict) and 'precision' in stats1:
+            ret['ap50'] = stats1['precision']
         else:
             ret['ap50'] = 0.0
 
         print('Eval summary: map50={:.4f}, precision={:.4f}, recall={:.4f}, MOTA={:.4f}, IDF1={:.4f}'.format(
-                stats1.get('map50', 0.0) if isinstance(stats1, dict) else 0.0,
+                stats1.get('precision', 0.0) if isinstance(stats1, dict) else 0.0,
                 stats1.get('precision', 0.0) if isinstance(stats1, dict) else 0.0,
                 stats1.get('recall', 0.0) if isinstance(stats1, dict) else 0.0,
                 stats1.get('MOTA', 0.0) if isinstance(stats1, dict) else 0.0,

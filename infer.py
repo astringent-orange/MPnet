@@ -36,6 +36,7 @@ import cv2
 from glob import glob
 from src.utils.tools import print_banner
 from progress.bar import Bar
+from src.utils.discheck import check
 
 if __name__ == '__main__':
     opt = opts().parse()
@@ -76,62 +77,74 @@ if __name__ == '__main__':
         out_txt = os.path.join(out_root, f'{video_name}.txt')
         cap = cv2.VideoCapture(video_path)
         frame_idx = 0
-        # 读取所有帧
         frames = []
         while True:
             ret, img = cap.read()
             if not ret:
                 break
-            # 确保图像尺寸与训练时一致
             img_input = cv2.resize(img, (opt.img_width, opt.img_height))
             img_input = img_input.astype(np.float32) / 255.
             img_input = (img_input - 0.49965) / 0.08255
-            img_input = torch.from_numpy(img_input).permute(2, 0, 1)  # (3, H, W)
+            img_input = torch.from_numpy(img_input).permute(2, 0, 1)
             frames.append(img_input)
         cap.release()
-        
         if len(frames) == 0:
             print(f'No frames found in {video_name}')
             continue
-            
-        # 处理时序输入
         seq_len = opt.seq_len
+        dets_buffer = []
+        inds_buffer = []
+        dis_buffer = []
+        file_folder_buffer = []
         with open(out_txt, 'w') as f:
             with Bar(f'  {video_name}', max=len(frames)) as frame_bar:
                 for i in range(len(frames)):
-                    # 构建时序输入：重复当前帧或使用历史帧
                     if i < seq_len - 1:
-                        # 前几帧用第一帧填充
                         seq_frames = [frames[0]] * (seq_len - i - 1) + frames[:i+1]
                     else:
-                        # 使用历史帧
                         seq_frames = frames[i-seq_len+1:i+1]
-                    
-                    # 构建时序输入 (B, N, 3, H, W)
-                    img_seq = torch.stack(seq_frames, dim=0).unsqueeze(0).to(device)  # (1, seq_len, 3, H, W)
-                    
-                    # 推理
+                    img_seq = torch.stack(seq_frames, dim=0).unsqueeze(0).to(device)
                     with torch.no_grad():
-                        output = model(img_seq, training=False)[1][1]  # 取ret[1]
-                    
-                    # 解析检测框
-                    hm = output['hm'].sigmoid().cpu().numpy()[0, 0]  # (H, W)
-                    wh = output['wh'].cpu().numpy()[0]  # (2, H, W)
-                    reg = output['reg'].cpu().numpy()[0]  # (2, H, W)
-                    
-                    thresh = 0.3
+                        output = model(img_seq, training=False)[1][1]
+                    hm = output['hm'].sigmoid().cpu().numpy()[0, 0]
+                    wh = output['wh'].cpu().numpy()[0]
+                    reg = output['reg'].cpu().numpy()[0]
+                    dis = output['dis'].cpu().numpy()[0]  # (seq_len-1, 2, H, W)
+                    thresh = 0.2
                     ys, xs = np.where(hm > thresh)
-                    
+                    dets = []
+                    inds = []
                     for obj_idx, (y, x) in enumerate(zip(ys, xs)):
                         score = hm[y, x]
                         w, h = wh[0, y, x], wh[1, y, x]
-                        # 计算实际坐标
                         x1 = int((x + reg[0, y, x]) * opt.down_ratio)
                         y1 = int((y + reg[1, y, x]) * opt.down_ratio)
                         w = int(w * opt.down_ratio)
                         h = int(h * opt.down_ratio)
-                        f.write(f'{frame_idx} {obj_idx} {x1} {y1} {w} {h} 1 -1 -1 -1\n')
-                    
-                    frame_idx += 1
+                        x2 = x1 + w
+                        y2 = y1 + h
+                        dets.append([x1, y1, x2, y2, score, 1, obj_idx])
+                        inds.append(y * hm.shape[1] + x)
+                    dets_buffer.append(dets)
+                    inds_buffer.append(np.array(inds, dtype=np.int64))
+                    dis_buffer.append(dis)
+                    file_folder_buffer.append(video_name)
+                    # 每seq_len帧做一次优化
+                    if (i + 1) % seq_len == 0 or i == len(frames) - 1:
+                        dets_seq = dets_buffer[-seq_len:]
+                        dis_seq = dis_buffer[-seq_len:]
+                        inds_seq = inds_buffer[-seq_len:]
+                        file_seq = file_folder_buffer[-seq_len:]
+                        dets_seq_new, inds_seq_new = check(opt, file_seq, dets_seq, dis_seq, inds_seq)
+                        dets_buffer[-seq_len:] = dets_seq_new
+                        inds_buffer[-seq_len:] = inds_seq_new
                     frame_bar.next()
+            # 写入优化后的检测结果
+            for frame_idx, dets in enumerate(dets_buffer):
+                for obj in dets:
+                    x1, y1, x2, y2, score, cls, ind = obj
+                    w = x2 - x1
+                    h = y2 - y1
+                    f.write(f'{frame_idx} {ind} {int(x1)} {int(y1)} {int(w)} {int(h)} 1 -1 -1 -1\n')
+
     print(f'Inference done. Results saved to {out_root}') 

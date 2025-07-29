@@ -53,6 +53,8 @@ MPnet/
    ```
 2. 安装依赖：
    ```bash
+   pip install mmcv==2.2.0 -f https://download.openmmlab.com/mmcv/dist/cu121/torch2.1/index.html   # 建议最先安装
+   pip install torch==2.1.0 torchvision==0.16.0 --index-url https://download.pytorch.org/whl/cu121
    pip install -r requirements.txt
    ```
 
@@ -131,6 +133,20 @@ python test_eval.py
 - 推理结果（txt）保存在`data/outputs/时间戳/`下。
 - 评测结果（如mAP50、MOTA、IDF1等）会自动写入`eval_results.txt`。
 
+---
+
+## 参考
+```
+@article{zhao2024mp2net,
+  author={Zhao, Manqi and Li, Shengyang and Wang, Han and Yang, Jian and Sun, Yuhan and Gu, Yanfeng},
+  journal={IEEE Transactions on Geoscience and Remote Sensing}, 
+  title={MP2Net: Mask Propagation and Motion Prediction Network for Multiobject Tracking in Satellite Videos}, 
+  year={2024},
+  volume={62},
+  pages={1-15},
+  publisher={IEEE}
+}
+```
 ---
 
 如有问题或建议，欢迎提issue或联系作者。

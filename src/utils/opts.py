@@ -23,7 +23,7 @@ class opts():
                                  help='-1 for CPU, use comma for multiple gpus')
         self.parser.add_argument('--num_workers', type=int, default=8,
                                  help='dataloader threads. 0 for single-thread.')
-        self.parser.add_argument('--seed', type=int, default=666,
+        self.parser.add_argument('--seed', type=int, default=317,
                                  help='random seed')
 
         # train 训练参数

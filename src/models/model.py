@@ -614,9 +614,9 @@ class DLASeg(nn.Module):
         fill_up_weights(up)
 
         if with_dcn:
-            fc = DCN(in_filters, planes,
+            fc = ModulatedDeformConv(in_filters, planes,
                 kernel_size=(3,3), stride=1,
-                padding=1, dilation=1, deformable_groups=1)
+                padding=1, dilation=1, deform_groups=1)
             layers.append(fc)
             layers.append(nn.BatchNorm2d(planes, momentum=BN_MOMENTUM))
             layers.append(nn.ReLU(inplace=True))

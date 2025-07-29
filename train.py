@@ -120,7 +120,7 @@ def train(opt):
         for k, v in log_dict_train.items():
             logger.write('{} {:8f} | '.format(k, v))
 
-        # 判断是否需要进行验证（根据 val_intervals）
+        #判断是否需要进行验证（根据 val_intervals）
         if val_intervals > 0 and epoch % val_intervals == 0:
             # 在验证集上评估模型
             with torch.no_grad():

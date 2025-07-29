@@ -8,6 +8,7 @@ import numpy as np
 import cv2
 import math
 import datetime
+import motmetrics as mm
 from torch.utils.data import Dataset
 from collections import defaultdict
 from src.utils.opts import opts
@@ -51,6 +52,32 @@ class MPDataset(Dataset):
 
     def __len__(self):
         return self.num_samples
+
+    def _read_label(self, label_path):
+        """
+        读取单帧的label.txt，返回目标列表。
+        每行格式：帧号 物体id x y w h 类别 -1 -1 -1
+        这里只取物体id, x, y, w, h, 类别。
+        返回：list，每个元素为dict，含obj_id, bbox, cls
+        """
+        targets = []
+        if not label_path or not os.path.isfile(label_path):
+            return targets
+        with open(label_path, 'r') as f:
+            for line in f:
+                items = line.strip().split()
+                if len(items) < 7:
+                    continue
+                obj_id = int(items[1])
+                x, y, w, h = map(float, items[2:6])
+                cls = int(items[6])
+                # bbox为[x1, y1, x2, y2]格式
+                targets.append({
+                    'obj_id': obj_id,
+                    'bbox': [x, y, x + w, y + h],
+                    'cls': cls
+                })
+        return targets
 
     def _coco_box_to_bbox(self, box):
         """
@@ -334,89 +361,69 @@ class MPDataset(Dataset):
 
     def run_eval(self, results, save_dir, time_str):
         """
-        评测：输出mAP50、准确率、召回率、MOTA、IDF1，并保存到txt。
+        使用motmetrics库评测：输出MOTA、IDF1等，并返回。
         """
-        # IoU计算函数
-        def iou(boxA, boxB):
-            xA = max(boxA[0], boxB[0])
-            yA = max(boxA[1], boxB[1])
-            xB = min(boxA[2], boxB[2])
-            yB = min(boxA[3], boxB[3])
-            interArea = max(0, xB - xA) * max(0, yB - yA)
-            boxAArea = max(0, boxA[2] - boxA[0]) * max(0, boxA[3] - boxA[1])
-            boxBArea = max(0, boxB[2] - boxB[0]) * max(0, boxB[3] - boxB[1])
-            iou = interArea / (boxAArea + boxBArea - interArea + 1e-6)
-            return iou
-
-        iou_thr = 0.5
-        all_TP, all_FP, all_FN = 0, 0, 0
-        all_precisions, all_recalls, all_ap = [], [], []
-        all_mota_num, all_mota_den, all_idtp, all_idfp, all_idfn = 0, 0, 0, 0, 0
-        # 遍历每张图片
+        acc = mm.MOTAccumulator(auto_id=True)
+        
+        # 遍历每张图片（帧）
         for img_id, dets in results.items():
             # 只考虑类别1（单类别）
             pred_boxes = dets.get(1, np.zeros((0, 6)))
             pred_boxes = pred_boxes if isinstance(pred_boxes, np.ndarray) else np.array(pred_boxes)
-            pred_boxes = pred_boxes.tolist() if isinstance(pred_boxes, np.ndarray) else pred_boxes
+            
             # 读取GT
             fname = self.images[img_id]
             base = os.path.splitext(fname)[0]
             label_path = os.path.join(self.label_dir, base + '.txt')
             gt_objs = self._read_label(label_path)
+            gt_ids = [str(obj['obj_id']) for obj in gt_objs]
             gt_boxes = [obj['bbox'] for obj in gt_objs]
-            gt_ids = [obj['obj_id'] for obj in gt_objs]
-            matched_gt = set()
-            TP, FP, FN = 0, 0, 0
-            idtp, idfp, idfn = 0, 0, 0
-            # 匹配预测框和GT框
-            for pred in pred_boxes:
-                pred_box = pred[:4]
-                pred_score = pred[4]
-                best_iou = 0
-                best_gt_idx = -1
-                for idx, gt_box in enumerate(gt_boxes):
-                    if idx in matched_gt:
-                        continue
-                    iou_val = iou(pred_box, gt_box)
-                    if iou_val > best_iou:
-                        best_iou = iou_val
-                        best_gt_idx = idx
-                if best_iou >= iou_thr:
-                    TP += 1
-                    matched_gt.add(best_gt_idx)
-                    # IDF1/MOTA简单实现：如果obj_id一致则idtp+=1，否则idfp+=1
-                    if 'obj_id' in gt_objs[best_gt_idx] and len(pred) > 5 and int(pred[5]) == int(gt_objs[best_gt_idx]['obj_id']):
-                        idtp += 1
-                    else:
-                        idfp += 1
-                else:
-                    FP += 1
-                    idfp += 1
-            FN = len(gt_boxes) - len(matched_gt)
-            idfn = FN
-            all_TP += TP
-            all_FP += FP
-            all_FN += FN
-            all_mota_num += (FP + FN + idfp)  # 近似MOTA分母
-            all_mota_den += (len(gt_boxes) if len(gt_boxes) > 0 else 1)
-            all_idtp += idtp
-            all_idfp += idfp
-            all_idfn += idfn
-            precision = TP / (TP + FP + 1e-6)
-            recall = TP / (TP + FN + 1e-6)
-            all_precisions.append(precision)
-            all_recalls.append(recall)
-            # AP50: 只用单阈值，等价于precision@recall
-            all_ap.append(precision)
-        # 统计整体指标
-        precision = np.mean(all_precisions) if all_precisions else 0
-        recall = np.mean(all_recalls) if all_recalls else 0
-        map50 = np.mean(all_ap) if all_ap else 0
-        mota = 1 - (all_mota_num / (all_mota_den + 1e-6)) if all_mota_den > 0 else 0
-        idf1 = (2 * all_idtp) / (2 * all_idtp + all_idfp + all_idfn + 1e-6) if (2 * all_idtp + all_idfp + all_idfn) > 0 else 0
-        stats = {'map50': map50, 'precision': precision, 'recall': recall, 'MOTA': mota, 'IDF1': idf1}
-        # 保存结果和评测统计
-        # self.save_results(results, save_dir, time_str, eval_stats=stats)
+            
+            # 预测ID和框 - 修正处理逻辑
+            if pred_boxes.shape[0] > 0 and pred_boxes.shape[1] >= 6:
+                pred_ids = [str(int(box[5])) for box in pred_boxes]
+                pred_boxes_xyxy = [box[:4] for box in pred_boxes]
+            else:
+                pred_ids = []
+                pred_boxes_xyxy = []
+            
+            # 计算距离矩阵（1 - IoU）
+            if len(gt_boxes) > 0 and len(pred_boxes_xyxy) > 0:
+                # 确保gt_boxes和pred_boxes_xyxy都是正确的格式
+                gt_boxes_array = np.array(gt_boxes).reshape(-1, 4)
+                pred_boxes_array = np.array(pred_boxes_xyxy).reshape(-1, 4)
+                
+                dists = mm.distances.iou_matrix(
+                    gt_boxes_array, pred_boxes_array, max_iou=0.5
+                )
+                dists = 1 - dists  # motmetrics的距离是1-IOU
+            else:
+                # 当没有GT或没有预测时，创建正确形状的距离矩阵
+                dists = np.full((len(gt_boxes), len(pred_boxes_xyxy)), np.nan)
+            
+            # # 调试信息
+            # if img_id < 5:  # 只打印前5帧的调试信息
+            #     print(f'img_id={img_id}, gt_ids={len(gt_ids)}, pred_ids={len(pred_ids)}, dists.shape={dists.shape}')
+            #     print(f'gt_boxes: {len(gt_boxes)}, pred_boxes_xyxy: {len(pred_boxes_xyxy)}')
+            
+            # 累加到accumulator
+            acc.update(gt_ids, pred_ids, dists)
+        
+        mh = mm.metrics.create()
+        summary = mh.compute(acc, metrics=mm.metrics.motchallenge_metrics, name='acc')
+        stats = {k: summary.loc['acc', k] for k in summary.columns}
+        
+        # 保存结果
+        os.makedirs(save_dir, exist_ok=True)
+        txt_path = os.path.join(save_dir, 'eval_results.txt')
+        with open(txt_path, 'a') as f:
+            f.write(f'==== Eval at {time_str} ====\n')
+            f.write(mm.io.render_summary(
+                summary,
+                formatters=mh.formatters,
+                namemap=mm.io.motchallenge_metric_names
+            ))
+            f.write('\n')
         return stats, None
 
 
