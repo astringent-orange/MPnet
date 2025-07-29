@@ -27,12 +27,21 @@ def print_dict_structure(d, indent=0):
 
 if __name__ == '__main__':
     opt = opts().parse()
-    dataset = MPDataset(opt, dataset_type='train')
+    dataset1 = MPDataset(opt, dataset_type='train')
+    dataset2 = MPDataset(opt, dataset_type='val')
 
-    print_banner("print sample")
+    print_banner("Print sample")
 
-    for i in range(2):
-        img_id, sample = dataset[i]
+    for i in range(1):
+        img_id, sample = dataset1[i]
+        print(f"样本{i}: img_id={img_id}, file_name={sample['file_name']}, input.shape={sample['input'].shape}")
+        print("ret结构:")
+        print_dict_structure(sample)
+        print()  # 每个输出结果之间换行
+
+    
+    for i in range(1):
+        img_id, sample = dataset2[i]
         print(f"样本{i}: img_id={img_id}, file_name={sample['file_name']}, input.shape={sample['input'].shape}")
         print("ret结构:")
         print_dict_structure(sample)

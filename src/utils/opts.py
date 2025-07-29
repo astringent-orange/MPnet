@@ -15,6 +15,8 @@ class opts():
         # basic 基本参数
         self.parser.add_argument('--down_ratio', type=int, default=1,
                                  help='output stride. Currently only supports for 1.')
+        self.parser.add_argument('--num_classes', type=int, default=1,
+                                 help='4 classes for car, airplane, ship and train.')
 
         # system 系统参数
         self.parser.add_argument('--gpus', default='0, 1',
@@ -25,8 +27,6 @@ class opts():
                                  help='random seed')
 
         # train 训练参数
-        self.parser.add_argument('--num_classes', type=int, default=1,
-                                 help='number of classes')
         self.parser.add_argument('--lr', type=float, default=1.25e-4,
                                  help='learning rate for batch size 4.')
         self.parser.add_argument('--lr_step', type=str, default='14',
@@ -35,7 +35,7 @@ class opts():
                                  help='total training epochs.')
         self.parser.add_argument('--batch_size', type=int, default=2,
                                  help='batch size')
-        self.parser.add_argument('--val_intervals', type=int, default=2,
+        self.parser.add_argument('--val_intervals', type=int, default=4,
                                  help='number of epochs to run validation.')
         self.parser.add_argument('--seq_len', type=int, default=5,
                                  help='number of images for per sample. Currently supports 5.')

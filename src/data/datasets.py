@@ -12,118 +12,101 @@ from torch.utils.data import Dataset
 from collections import defaultdict
 from src.utils.opts import opts
 from src.utils.tools import print_banner
-from src.utils.image import draw_umich_gaussian, gaussian_radius
+from src.utils.image import (
+    draw_umich_gaussian, gaussian_radius, flip, color_aug, 
+    get_affine_transform, affine_transform, draw_msra_gaussian,
+    draw_dense_reg
+)
+from src.utils.augmentations import Augmentation
 
-
-def _normalize_img(img, mean, std):
-    img = img.astype(np.float32) / 255.
-    return (img - mean) / std
-
-def _load_img(img_path, img_size):
-    img = cv2.imread(img_path)
-    if img is None:
-        img = np.zeros((img_size[0], img_size[1], 3), dtype=np.uint8)
-    else:
-        img = cv2.resize(img, img_size)
-    return img
-
-def _zero_img(img_size):
-    return np.zeros((img_size[0], img_size[1], 3), dtype=np.uint8)
 
 class MPDataset(Dataset):
-    """
-    MPDataset：适配所有帧图片都在同一目录，文件名格式为[videoid]_[frameid].jpg的数据集。
-    支持多类别目标检测与跟踪任务。
-    返回内容与COCO类一致，便于与现有检测/跟踪训练流程兼容。
-    """
     def __init__(self, opt, dataset_type='train'):
         self.opt = opt
+
         self.dataset_type = dataset_type
         self.dataroot = os.path.join(opt.dataroot, dataset_type)
         self.images_dir = os.path.join(self.dataroot, 'images')  # 图片目录
         self.label_dir = os.path.join(self.dataroot, 'labels')   # 标签目录
-        
-        self.images = sorted([f for f in os.listdir(self.images_dir) if f.endswith('.jpg')])
-        self.labels = sorted([f for f in os.listdir(self.label_dir) if f.endswith('.txt')])
+        self.images = sorted([f for f in os.listdir(self.images_dir) if f.endswith('.jpg')])    # 图片文件列表
+        self.labels = sorted([f for f in os.listdir(self.label_dir) if f.endswith('.txt')])     # 标签文件列表
 
         self.num_samples = len(self.images)
         self.seq_len = opt.seq_len
         self.max_objs = opt.max_objs
-        self.down_ratio = getattr(opt, 'down_ratio', 4)
-        self.num_classes = getattr(opt, 'num_classes', 1)
-        if hasattr(opt, 'img_height') and hasattr(opt, 'img_width'):
-            self.img_size = (opt.img_height, opt.img_width)
-        elif hasattr(opt, 'img_size'):
-            self.img_size = opt.img_size
-        else:
-            self.img_size = (512, 512)
+        self.down_ratio = opt.down_ratio
+        self.num_classes = opt.num_classes
+
+        # 图片归一化参数
         self.mean = np.array([0.49965, 0.49965, 0.49965], dtype=np.float32).reshape(1, 1, 3)
         self.std = np.array([0.08255, 0.08255, 0.08255], dtype=np.float32).reshape(1, 1, 3)
-        self.transform = getattr(opt, 'transform', None)
+
+        # 训练集使用数据增强
+        if(self.dataset_type=='train'):
+            self.aug = Augmentation(opt)
+        else:
+            self.aug = None
 
         print(f"Loaded {self.num_samples} {self.dataset_type} samples")
 
     def __len__(self):
         return self.num_samples
 
-    def _read_label(self, label_path):
+    def _coco_box_to_bbox(self, box):
         """
-        读取单帧的label.txt，返回目标列表。
-        每行格式：帧号 物体id x y w h 类别 -1 -1 -1
-        这里只取物体id, x, y, w, h, 类别。
-        返回：list，每个元素为dict，含obj_id, bbox, cls
+        将边界框格式的[x, y, w, h]转为[x1, y1, x2, y2]。
         """
-        targets = []
-        if not label_path or not os.path.isfile(label_path):
-            return targets
-        with open(label_path, 'r') as f:
-            for line in f:
-                items = line.strip().split()
-                if len(items) < 7:
-                    continue
-                obj_id = int(items[1])
-                x, y, w, h = map(float, items[2:6])
-                cls = int(items[6])
-                # bbox为[x1, y1, x2, y2]格式
-                targets.append({
-                    'obj_id': obj_id,
-                    'bbox': [x, y, x + w, y + h],
-                    'cls': cls
-                })
-        return targets
+        if len(box) == 0:
+            return box
+        else:
+            box = np.array(box, dtype=np.int32)
+            bbox = [box[0], box[1], box[0] + box[2], box[1] + box[3]]
+            return bbox
 
-    def _sample_sequence(self, idx, cur_video_id):
+    def _get_border(self, border, size):
         """
-        采样时序帧，返回imgs, targets, file_names
+        计算边界，用于数据增强。
         """
-        imgs, targets, file_names = [], [], []
-        for i in range(self.seq_len):
-            tid = idx - self.seq_len + i + 1
-            if tid < 0 or tid >= self.num_samples:
-                imgs.append(_zero_img(self.img_size))
-                targets.append([])
-                file_names.append('')
-                continue
-            fname = self.images[tid]
-            base = os.path.splitext(fname)[0]
-            video_id = base.split('_', 1)[0] if '_' in base else 'unknown'
-            if video_id != cur_video_id:
-                imgs.append(_zero_img(self.img_size))
-                targets.append([])
-                file_names.append(fname)
-                continue
-            img_path = os.path.join(self.images_dir, fname)
-            label_path = os.path.join(self.label_dir, base + '.txt') if self.label_dir else None
-            img = _load_img(img_path, self.img_size)
-            tars = self._read_label(label_path)
-            imgs.append(img)
-            targets.append(tars)
-            file_names.append(fname)
-        return imgs, targets, file_names
+        i = 1
+        while size - border // i <= border // i:
+            i *= 2
+        return border // i
+
+    def _get_transoutput(self, c, s, height, width):
+        """
+        计算仿射变换矩阵，用于标签映射。
+        """
+        trans_output = get_affine_transform(c, s, 0, [width, height])
+        return trans_output
+
+    def transform_box(self, bbox, transform, output_w, output_h):
+        """
+        对bbox做仿射变换，得到中心点和高斯半径，用于生成heatmap。
+        参数：
+            bbox: 边界框[x1, y1, x2, y2]
+            transform: 仿射变换矩阵
+            output_w, output_h: 输出特征图宽高
+        返回：
+            bbox: 变换后的bbox
+            ct: 中心点
+            radius: 高斯半径
+        """
+        bbox[:2] = affine_transform(bbox[:2], transform)
+        bbox[2:] = affine_transform(bbox[2:], transform)
+        h, w = bbox[3] - bbox[1], bbox[2] - bbox[0]
+        h = np.clip(h, 0, output_h - 1)
+        w = np.clip(w, 0, output_w - 1)
+        radius = gaussian_radius((math.ceil(h), math.ceil(w)))
+        radius = max(0, int(radius))
+        ct = np.array(
+            [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2], dtype=np.float32)
+        ct[0] = np.clip(ct[0], 0, output_w - 1)
+        ct[1] = np.clip(ct[1], 0, output_h - 1)
+        return bbox, ct, radius   
 
     def __getitem__(self, idx):
         """
-        返回一个时序样本，内容与COCO类一致：
+        返回一个时序样本：
         img_id, ret
         其中：
         - img_id: 当前样本唯一id（此处用idx）
@@ -141,95 +124,192 @@ class MPDataset(Dataset):
                 'dis_mask': (seq_len-1, max_objs)
             'file_name': 当前帧图片文件名
         """
-        cur_fname = self.images[idx]
-        base = os.path.splitext(cur_fname)[0]
-        cur_video_id = base.split('_', 1)[0] if '_' in base else 'unknown'
-        imgs, targets, file_names = self._sample_sequence(idx, cur_video_id)
-        # 归一化和变换
-        imgs = [_normalize_img(img, self.mean, self.std) for img in imgs]
-        if self.transform:
-            imgs = [self.transform(img) for img in imgs]
-        # 转换为PyTorch常用格式 (seq_len, 3, H, W)
-        imgs = np.stack(imgs, axis=0).transpose(0, 3, 1, 2)
-        height, width = self.img_size
-        output_h, output_w = height // self.down_ratio, width // self.down_ratio
-        seq_num, max_objs, num_classes = self.seq_len, self.max_objs, self.num_classes
-        # 标签初始化
-        hm = np.zeros((seq_num, num_classes, output_h, output_w), dtype=np.float32)  # 每帧每类heatmap
-        hm_seq = np.zeros((seq_num, 1, output_h, output_w), dtype=np.float32)        # 每帧单通道heatmap
-        wh = np.zeros((max_objs, 2), dtype=np.float32)      # 当前帧每目标宽高
-        reg = np.zeros((max_objs, 2), dtype=np.float32)     # 当前帧每目标中心点偏移
-        ind = np.zeros((max_objs), dtype=np.int64)          # 当前帧每目标中心点索引
-        reg_mask = np.zeros((max_objs), dtype=np.uint8)     # 当前帧每目标mask
-        ind_dis = np.zeros((seq_num - 1, max_objs), dtype=np.int64)      # 跟踪分支索引
-        dis_mask = np.zeros((seq_num - 1, max_objs), dtype=np.uint8)     # 跟踪分支mask
-        dis = np.zeros((seq_num - 1, max_objs, 2), dtype=np.float32)     # 跟踪分支位移
-        gt_det = []
-        # 统计所有目标id在各帧的中心点
-        obj_id2ct = defaultdict(lambda: [None]*seq_num)
-        obj_id2ind = defaultdict(lambda: [None]*seq_num)
-        for i in range(seq_num):
-            tars = targets[i]
-            for k, tar in enumerate(tars):
-                bbox = tar['bbox']
-                cls_id = 0  # 单类别
-                obj_id = tar['obj_id']
-                # 缩放到输出特征图
-                bbox = np.array(bbox, dtype=np.float32)
-                bbox = bbox * [output_w/width, output_h/height, output_w/width, output_h/height]
+        # 文件名
+        file_name = self.images[idx]
+
+        # 解析文件名，获取帧号和视频编号
+        imIdex = file_name.split('.')[0].split('_')[-1]         #000001
+        imf = file_name.split('_')[0]                           #001
+        imtype = '.'+file_name.split('.')[-1]                   #.jpg
+        # 读取当前帧图片
+        im0 = cv2.imread(os.path.join(self.images_dir, file_name))
+        # 初始化时序图片数组 (H, W, 3, seq_len)
+        img = np.zeros([im0.shape[0], im0.shape[1], 3, self.seq_len])
+        pre_revrs_ids = []        # 存储前序帧的图片ID
+        interval = []
+        temp_id = idx
+
+        # 读取时序帧图片，并做归一化
+        for ii in range(self.seq_len):
+            # 计算当前时序帧的帧号（保证最小为1，防止越界），格式化为6位字符串
+            imIndexNew = '%06d' % max(int(imIdex) - self.seq_len + ii + 1, 1)
+            # 构建当前时序帧的完整文件路径（如 '001/img1/000001.jpg'）
+            imName = imf + '_' + imIndexNew + imtype
+            # 仅当当前帧索引未超过实际帧号时，更新temp_id为对应的图片ID
+            if ii <= int(imIdex) - 1:
+                temp_id = idx - ii
+            # 除了第0帧外，记录前序帧的图片ID和与当前帧的间隔
+            if ii != 0:
+                pre_revrs_ids.append(temp_id)
+                interval.append(idx - temp_id)
+            # 读取当前时序帧图片（BGR格式，H×W×3）
+            im = cv2.imread(os.path.join(self.images_dir, imName))
+            # 将图片像素归一化到[0,1]，再做均值方差归一化
+            inp_i = (im.astype(np.float32) / 255.)
+            inp_i = (inp_i - self.mean) / self.std
+            # 存入时序图片数组的第ii帧（H, W, 3, seq_len）
+            img[:, :, :, ii] = inp_i
+     
+        bbox_tol = []   # 当前帧所有目标的bbox
+        cls_id_tol = [] # 当前帧所有目标的类别
+        ids_tol = []    # 当前帧所有目标的ID
+
+        with open(os.path.join(self.label_dir, self.labels[idx]), 'r') as f:
+            for id, line in enumerate(f.readlines()):
+                if id > self.max_objs:
+                    break
+                line = line.strip().split(' ')
+                bbox_tol.append(self._coco_box_to_bbox(line[2:6]))  # 边界框
+                cls_id_tol.append(int(line[6]))                     # 类别ID
+                ids_tol.append(int(line[1]))                        # 目标ID
+
+        # 获取前序帧的目标框和ID
+        pre_bboxes = defaultdict(list)
+        pre_ids = defaultdict(list)
+        for i in range(self.seq_len - 1):
+            pre_ann_dir = os.path.join(self.label_dir, self.labels[idx-self.seq_len+i+1])
+            with open(pre_ann_dir, 'r') as f:
+                for id, line in enumerate(f.readlines()):
+                    if id > self.max_objs:
+                        break
+                    line = line.strip().split(' ')
+                    pre_bboxes[i + 1].append(self._coco_box_to_bbox(line[2:6]))
+                    pre_ids[i + 1].append(int(line[1]))
+
+        # 数据增强（仅训练集）
+        if self.aug is not None:
+            bbox_tol = np.array(bbox_tol)
+            cls_id_tol = np.array(cls_id_tol)
+            ids_tol = np.array(ids_tol)
+            for i in range(self.seq_len - 1):
+                pre_bboxes[i + 1] = np.array(pre_bboxes[i + 1])
+                pre_ids[i + 1] = np.array(pre_ids[i + 1])
+            # 增强图片和标签
+            img, _, bbox_tol, cls_id_tol, ids_tol, pre_bboxes, pre_ids = self.aug(img, img, bbox_tol, cls_id_tol, ids_tol, pre_bboxes, pre_ids)
+            bbox_tol = bbox_tol.tolist()
+            cls_id_tol = cls_id_tol.tolist()
+            ids_tol = ids_tol.tolist()
+            for i in range(self.seq_len - 1):
+                pre_bboxes[i + 1] = pre_bboxes[i + 1].tolist()
+                pre_ids[i + 1] = pre_ids[i + 1].tolist()
+        
+        # 确保 num_objs 在所有情况下都被定义
+        num_objs = len(bbox_tol)
+
+        # 转换图片shape为 (seq_len, 3, H, W)
+        inp = img.transpose(3, 2, 0, 1).astype(np.float32)
+        # 裁剪图片尺寸为16的倍数
+        height, width = img.shape[0] - img.shape[0] % 32, img.shape[1] - img.shape[1] % 32
+        inp = inp[:, :, 0:height, 0:width]
+        # 计算中心点和缩放因子
+        c = np.array([width / 2., height / 2.], dtype=np.float32)
+        s = max(width, height) * 1.0
+        ret = {'input': inp}
+
+        down_ratios = [1]
+        for ratio in down_ratios:
+            # 计算输出特征图尺寸
+            output_h = height // ratio // self.down_ratio
+            output_w = width // ratio // self.down_ratio
+            trans_output = self._get_transoutput(c, s, output_h, output_w)
+
+            # 初始化标签（heatmap、wh、reg、mask等）
+            hm = np.zeros((self.seq_len, self.num_classes, output_h, output_w), dtype=np.float32)      # 目标类别热力图 (时序帧数, 类别数, H, W)
+            hm_seq = np.zeros((self.seq_len, 1, output_h, output_w), dtype=np.float32)                 # 目标存在性热力图 (时序帧数, 1, H, W)
+            wh = np.zeros((self.max_objs, 2), dtype=np.float32)                                   # 目标宽高 (最大目标数, 2)
+            reg = np.zeros((self.max_objs, 2), dtype=np.float32)                                  # 目标中心点偏移 (最大目标数, 2)
+            ind = np.zeros((self.max_objs), dtype=np.int64)                                       # 目标中心点在特征图上的索引 (最大目标数)
+            reg_mask = np.zeros((self.max_objs), dtype=np.uint8)                                  # 目标mask, 有效目标为1 (最大目标数)
+
+            ind_dis = np.zeros((self.seq_len - 1, self.max_objs), dtype=np.int64)                      # 前序帧目标中心点索引 (帧数-1, 最大目标数)
+            dis_mask = np.zeros((self.seq_len - 1, self.max_objs), dtype=np.uint8)                     # 前序帧目标mask, 有效目标为1 (帧数-1, 最大目标数)
+            dis = np.zeros((self.seq_len - 1, self.max_objs, 2), dtype=np.float32)                     # 前序帧目标中心点位移 (帧数-1, 最大目标数, 2)
+
+            gt_det = []
+            # 遍历每个目标，生成标签
+            for k in range(num_objs):
+                bbox = bbox_tol[k]
+                cls_id = cls_id_tol[k] - 1
+                obj_id = ids_tol[k]
+                # 仿射变换bbox到输出空间
+                bbox[:2] = affine_transform(bbox[:2], trans_output)
+                bbox[2:] = affine_transform(bbox[2:], trans_output)
+
                 h, w = bbox[3] - bbox[1], bbox[2] - bbox[0]
+                h = np.clip(h, 0, output_h - 1)
+                w = np.clip(w, 0, output_w - 1)
                 if h > 0 and w > 0:
-                    # 计算高斯半径
+                    # 处理时序帧的标签
+                    for i in range(1, self.seq_len):
+                        if i != self.seq_len - 1:
+                            if pre_ids[i].count(obj_id) != 0 and pre_ids[i + 1].count(obj_id) != 0:
+                                temp_ind_pre = pre_ids[i].index(obj_id)
+                                temp_ind_later = pre_ids[i + 1].index(obj_id)
+                                temp_box_pre = pre_bboxes[i][temp_ind_pre]
+                                temp_box_later = pre_bboxes[i + 1][temp_ind_later]
+
+                                temp_box_pre, ct_pre, radius_pre = self.transform_box(temp_box_pre, trans_output, output_w, output_h)
+                                temp_box_later, ct_later, radius_later = self.transform_box(temp_box_later, trans_output, output_w, output_h)
+                                
+                                ct_int_pre = ct_pre.astype(np.int32)
+                                draw_umich_gaussian(hm[i - 1][cls_id], ct_int_pre, radius_pre)
+                                draw_umich_gaussian(hm_seq[i - 1][0], ct_int_pre, radius_pre)
+                                ind_dis[i - 1][temp_ind_pre] = ct_int_pre[1] * output_w + ct_int_pre[0]
+                                dis[i - 1][temp_ind_pre] = ct_later - ct_pre
+                                dis_mask[i - 1][temp_ind_pre] = 1
+                        else:
+                            if pre_ids[i].count(obj_id) != 0:
+                                temp_ind_pre = pre_ids[i].index(obj_id)
+                                temp_box_pre = pre_bboxes[i][temp_ind_pre]
+                                temp_box_later = bbox_tol[k]
+
+                                temp_box_pre, ct_pre, radius_pre = self.transform_box(temp_box_pre, trans_output, output_w, output_h)
+                                temp_box_later, ct_later, radius_later = self.transform_box(temp_box_later, trans_output, output_w, output_h)
+                                
+                                ct_int_pre = ct_pre.astype(np.int32)
+                                draw_umich_gaussian(hm[i - 1][cls_id], ct_int_pre, radius_pre)
+                                draw_umich_gaussian(hm_seq[i - 1][0], ct_int_pre, radius_pre)
+                                ind_dis[i - 1][temp_ind_pre] = ct_int_pre[1] * output_w + ct_int_pre[0]
+                                dis[i - 1][temp_ind_pre] = ct_later - ct_pre
+                                dis_mask[i - 1][temp_ind_pre] = 1
+
+                    # 处理当前帧的标签
                     radius = gaussian_radius((math.ceil(h), math.ceil(w)))
                     radius = max(0, int(radius))
-                    # 计算中心点
-                    ct = np.array([(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2], dtype=np.float32)
+                    ct = np.array(
+                        [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2], dtype=np.float32)
                     ct[0] = np.clip(ct[0], 0, output_w - 1)
                     ct[1] = np.clip(ct[1], 0, output_h - 1)
                     ct_int = ct.astype(np.int32)
-                    # 画高斯热力图
-                    draw_umich_gaussian(hm[i][cls_id], ct_int, radius)
-                    draw_umich_gaussian(hm_seq[i][0], ct_int, radius)
-                    # 只在最后一帧填充检测标签
-                    if i == seq_num - 1:
-                        if k < max_objs:
-                            wh[k] = 1. * w, 1. * h
-                            ind[k] = ct_int[1] * output_w + ct_int[0]
-                            reg[k] = ct - ct_int
-                            reg_mask[k] = 1
-                            gt_det.append([ct[0] - w / 2, ct[1] - h / 2, ct[0] + w / 2, ct[1] + h / 2, 1, cls_id])
-                    obj_id2ct[obj_id][i] = ct
-                    obj_id2ind[obj_id][i] = ct_int[1] * output_w + ct_int[0]
-        # 生成dis标签（跟踪分支）
-        for k in range(max_objs):
-            for i in range(seq_num - 1):
-                # 只处理当前帧有目标且前一帧也有同id目标的情况
-                for obj_id in obj_id2ct:
-                    if obj_id2ct[obj_id][i] is not None and obj_id2ct[obj_id][i+1] is not None:
-                        ind_dis[i][k] = obj_id2ind[obj_id][i]
-                        dis[i][k] = obj_id2ct[obj_id][i+1] - obj_id2ct[obj_id][i]
-                        dis_mask[i][k] = 1
-        # 填充空目标（wh, reg, ind, reg_mask已初始化为0）
-        for kkk in range(len(targets[seq_num-1]), max_objs):
-            pass
-        # 构造ret字典
-        ret = {
-            'input': imgs.astype(np.float32),
-            1: {
-                'hm': hm,
-                'hm_seq': hm_seq,
-                'reg_mask': reg_mask,
-                'ind': ind,
-                'wh': wh,
-                'reg': reg,
-                'dis_ind': ind_dis,
-                'dis': dis,
-                'dis_mask': dis_mask
-            },
-            'file_name': cur_fname
-        }
-        img_id = idx
-        return img_id, ret 
+                    draw_umich_gaussian(hm[self.seq_len - 1][cls_id], ct_int, radius)
+                    draw_umich_gaussian(hm_seq[self.seq_len - 1][0], ct_int, radius)
+                    wh[k] = 1. * w, 1. * h
+                    ind[k] = ct_int[1] * output_w + ct_int[0]
+                    reg[k] = ct - ct_int
+                    reg_mask[k] = 1
+                    gt_det.append([ct[0] - w / 2, ct[1] - h / 2,
+                                ct[0] + w / 2, ct[1] + h / 2, 1, cls_id])
+            # 保存所有标签到ret
+            ret[ratio] = {'hm': hm, 'hm_seq': hm_seq, 'reg_mask': reg_mask, 'ind': ind, 'wh': wh, 'reg': reg, 'dis_ind': ind_dis, 'dis': dis, 'dis_mask': dis_mask}
+
+        # 填充空目标
+        for kkk in range(num_objs, self.max_objs):
+            bbox_tol.append([])
+
+        ret['file_name'] = file_name
+
+        # 返回图片ID和标签字典
+        return idx, ret 
         
     def save_results(self, results, save_dir, time_str, eval_stats=None):
         """

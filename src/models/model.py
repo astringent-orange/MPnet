@@ -314,7 +314,7 @@ class DLAUp(nn.Module):
     def forward(self, layers):
         out = [layers[-1]]
         for i in range(len(layers) - self.startp - 1):  # 0, 1, 2, 3
-            # print(i, layers[0].shape, layers[1].shape, layers[2].shape, layers[3].shape, layers[4].shape)
+        # for i in range(len(layers) - self.starttp):
             ida = getattr(self, 'ida_{}'.format(i))
             ida(layers, len(layers) -i - 2, len(layers))
             out.insert(0, layers[-1])  # 4, 3, 2, 1
@@ -637,7 +637,7 @@ class DLASeg(nn.Module):
         c0, c1, c2, c3, c4 = self.backbone(x, gru[0][:, i])   # 16, 32, 64, 128
         c1 = self.mask_prop1(p1_pre, c1, mask)
         c2 = self.mask_prop2(p2_pre, c2, mask)
-        p0, p1, p2, p3, _ = self.dla_up([c0, c1, c2, c3, c4])
+        p0, p1, p2, p3, _= self.dla_up([c0, c1, c2, c3, c4])
         # ida up
         y = [p0, p1, p2]
         self.ida_up(y, 0, len(y))
